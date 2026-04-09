@@ -56,6 +56,10 @@ class Trainer:
         if not self.quiet:
             print(f"Model parameters: {param_count:,}")
 
+        # Compile model for faster training (fuses small CUDA kernels)
+        if self.device.type == "cuda" and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, mode="reduce-overhead")
+
         # Build optimizer
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
