@@ -25,7 +25,8 @@ class CausalSelfAttention(nn.Module):
             torch.tril(torch.ones(max_seq_len, max_seq_len, dtype=torch.bool))
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor,
+                return_attention: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         B, T, C = x.shape
 
         q = self.W_Q(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
@@ -38,6 +39,8 @@ class CausalSelfAttention(nn.Module):
         attn = F.softmax(attn, dim=-1)
 
         out = (attn @ v).transpose(1, 2).contiguous().view(B, T, C)
+        if return_attention:
+            return self.W_O(out), attn  # attn: (B, n_heads, T, T)
         return self.W_O(out)
 
 
@@ -50,10 +53,18 @@ class TransformerBlock(nn.Module):
         self.mlp_in = nn.Linear(d_model, d_mlp)
         self.mlp_out = nn.Linear(d_mlp, d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x))
+    def forward(self, x: torch.Tensor,
+                return_attention: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if return_attention:
+            attn_out, attn_weights = self.attn(self.ln1(x), return_attention=True)
+            x = x + attn_out
+        else:
+            x = x + self.attn(self.ln1(x))
+            attn_weights = None
         h = self.ln2(x)
         x = x + self.mlp_out(F.gelu(self.mlp_in(h)))
+        if return_attention:
+            return x, attn_weights
         return x
 
 
@@ -134,6 +145,28 @@ class Transformer(nn.Module):
             )
 
         return loss, logits
+
+    def forward_with_attention(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        """Forward pass that also returns attention weights from every layer.
+
+        Returns:
+            (logits, attention_weights) where attention_weights is a list of
+            tensors, one per layer, each of shape (batch, n_heads, seq_len, seq_len).
+
+        Only use during evaluation — not compatible with torch.compile.
+        """
+        B, T = input_ids.shape
+        pos = torch.arange(T, device=input_ids.device)
+        x = self.tok_embed(input_ids) + self.pos_embed(pos)
+
+        all_attn = []
+        for block in self.blocks:
+            x, attn_weights = block(x, return_attention=True)
+            all_attn.append(attn_weights)
+
+        x = self.ln_final(x)
+        logits = self.unembed(x)
+        return logits, all_attn
 
     def compute_per_position_loss(self, input_ids: torch.Tensor,
                                   targets: torch.Tensor) -> dict[str, float]:
