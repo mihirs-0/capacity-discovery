@@ -64,9 +64,11 @@ def compute_z_shuffle_gap(model: Transformer, dataset_tensor: torch.Tensor,
     batch = dataset_tensor[indices].clone()
 
     with torch.no_grad():
-        # Clean loss
+        # Clean loss — read .item() immediately to prevent CUDA graph
+        # output buffer from being overwritten by the next model call
         clean = batch.to(device)
         loss_clean, _ = model(clean, clean)
+        clean_val = loss_clean.item()
 
         # Shuffled: permute z tokens (positions 8, 9) across batch
         shuffled = batch.clone()
@@ -75,11 +77,12 @@ def compute_z_shuffle_gap(model: Transformer, dataset_tensor: torch.Tensor,
         shuffled[:, 9] = batch[perm, 9]
         shuffled = shuffled.to(device)
         loss_shuffled, _ = model(shuffled, shuffled)
+        shuffled_val = loss_shuffled.item()
 
     return {
-        "z_shuffle_loss_clean": loss_clean.item(),
-        "z_shuffle_loss_shuffled": loss_shuffled.item(),
-        "z_shuffle_gap": loss_shuffled.item() - loss_clean.item(),
+        "z_shuffle_loss_clean": clean_val,
+        "z_shuffle_loss_shuffled": shuffled_val,
+        "z_shuffle_gap": shuffled_val - clean_val,
     }
 
 
