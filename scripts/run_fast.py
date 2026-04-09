@@ -83,6 +83,8 @@ def main():
     parser.add_argument("--early-stop", type=float, default=0.05,
                         help="Stop run when loss drops below this (default: 0.05). "
                              "Set to 0 to disable.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip runs that already have metrics. Keeps existing results.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -106,11 +108,37 @@ def main():
         return
 
     completed = 0
+    skipped = 0
     failed = 0
     t_global = time.time()
 
     for i, config in enumerate(configs):
-        label = f"D={config.task.D}_K={config.task.K}_seed={config.training.model_seed}"
+        D = config.task.D
+        seed = config.training.model_seed
+        label = f"D={D}_K={config.task.K}_seed={seed}"
+
+        # Resume: skip if metrics already exist with enough data
+        if args.resume:
+            metrics_path = os.path.join(
+                "results", config.experiment_name, "runs",
+                f"D{D}_seed{seed}", "metrics.jsonl"
+            )
+            if os.path.exists(metrics_path):
+                with open(metrics_path) as f:
+                    n_lines = sum(1 for _ in f)
+                # Consider done if early-stopped (loss < threshold) or ran enough steps
+                if n_lines >= 2:  # at least step 0 + some training
+                    import json
+                    with open(metrics_path) as f:
+                        lines = [json.loads(l) for l in f]
+                    last = lines[-1]
+                    if (early and last["train_loss"] < early) or n_lines >= args.max_steps // args.eval_every:
+                        print(f"[{i+1}/{len(configs)}] {label} ... SKIP "
+                              f"({n_lines} evals, last loss={last['train_loss']:.4f})")
+                        skipped += 1
+                        completed += 1
+                        continue
+
         print(f"[{i+1}/{len(configs)}] {label} ... ", end="", flush=True)
 
         t0 = time.time()
@@ -132,8 +160,9 @@ def main():
         torch.cuda.empty_cache()
 
     wall = time.time() - t_global
-    print(f"\nDone: {completed}/{len(configs)} succeeded, {failed} failed, "
-          f"{wall:.0f}s ({wall/60:.1f} min)")
+    print(f"\nDone: {completed}/{len(configs)} succeeded "
+          f"({skipped} skipped, {completed - skipped} ran), "
+          f"{failed} failed, {wall:.0f}s ({wall/60:.1f} min)")
 
 
 if __name__ == "__main__":
