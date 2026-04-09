@@ -117,27 +117,34 @@ def main():
         seed = config.training.model_seed
         label = f"D={D}_K={config.task.K}_seed={seed}"
 
-        # Resume: skip if metrics already exist with enough data
+        # Resume: skip only if run is truly complete
         if args.resume:
             metrics_path = os.path.join(
                 "results", config.experiment_name, "runs",
                 f"D{D}_seed{seed}", "metrics.jsonl"
             )
             if os.path.exists(metrics_path):
+                import json
                 with open(metrics_path) as f:
-                    n_lines = sum(1 for _ in f)
-                # Consider done if early-stopped (loss < threshold) or ran enough steps
-                if n_lines >= 2:  # at least step 0 + some training
-                    import json
-                    with open(metrics_path) as f:
-                        lines = [json.loads(l) for l in f]
+                    lines = [json.loads(l) for l in f if l.strip()]
+                if lines:
                     last = lines[-1]
-                    if (early and last["train_loss"] < early) or n_lines >= args.max_steps // args.eval_every:
+                    last_loss = last["train_loss"]
+                    last_step = last.get("step", 0)
+                    expected_evals = args.max_steps // args.eval_every + 1
+                    # Done if: loss hit early-stop OR ran all steps
+                    done = ((early and last_loss < early)
+                            or len(lines) >= expected_evals)
+                    if done:
                         print(f"[{i+1}/{len(configs)}] {label} ... SKIP "
-                              f"({n_lines} evals, last loss={last['train_loss']:.4f})")
+                              f"(step {last_step}, loss={last_loss:.4f})")
                         skipped += 1
                         completed += 1
                         continue
+                    else:
+                        print(f"[{i+1}/{len(configs)}] {label} ... "
+                              f"RESTART (was step {last_step}, loss={last_loss:.4f}) ",
+                              end="", flush=True)
 
         print(f"[{i+1}/{len(configs)}] {label} ... ", end="", flush=True)
 
