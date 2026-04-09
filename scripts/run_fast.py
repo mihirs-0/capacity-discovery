@@ -163,8 +163,10 @@ def main():
             failed += 1
 
         # Free memory between runs
-        del trainer
-        torch.cuda.empty_cache()
+        if "trainer" in dir():
+            del trainer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     wall = time.time() - t_global
     print(f"\nDone: {completed}/{len(configs)} succeeded "

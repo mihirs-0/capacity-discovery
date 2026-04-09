@@ -9,6 +9,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+try:
+    import torch._inductor.config as _inductor_config
+except ImportError:
+    _inductor_config = None
+
 from .config import ExperimentConfig
 from .model import Transformer
 from .task import SurjectiveMap
@@ -61,8 +66,8 @@ class Trainer:
         # Disable CUDA graphs to prevent output buffer overwrites between runs
         if self.device.type == "cuda" and hasattr(torch, "compile"):
             torch.set_float32_matmul_precision("high")
-            import torch._inductor.config
-            torch._inductor.config.triton.cudagraphs = False
+            if _inductor_config is not None:
+                _inductor_config.triton.cudagraphs = False
             self.model = torch.compile(self.model)
 
         # Build optimizer
