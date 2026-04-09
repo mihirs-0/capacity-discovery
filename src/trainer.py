@@ -29,9 +29,10 @@ def get_lr(step: int, warmup_steps: int, base_lr: float) -> float:
 
 class Trainer:
     def __init__(self, config: ExperimentConfig, device: torch.device | None = None,
-                 quiet: bool = False):
+                 quiet: bool = False, early_stop_loss: float | None = None):
         self.config = config
         self.quiet = quiet
+        self.early_stop_loss = early_stop_loss
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available()
             else "mps" if torch.backends.mps.is_available()
@@ -164,6 +165,14 @@ class Trainer:
                         loss=f"{metrics['train_loss']:.4f}",
                         gap=f"{metrics['z_shuffle_gap']:.4f}",
                     )
+                # Early stopping
+                if (self.early_stop_loss is not None
+                        and metrics["train_loss"] < self.early_stop_loss):
+                    self._save_checkpoint(step)
+                    if not self.quiet:
+                        print(f"\nEarly stop at step {step}: "
+                              f"loss {metrics['train_loss']:.4f} < {self.early_stop_loss}")
+                    return metrics
                 self.model.train()
 
             # Checkpoint

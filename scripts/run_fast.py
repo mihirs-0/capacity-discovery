@@ -80,6 +80,9 @@ def main():
     parser.add_argument("--max-steps", type=int, default=50000)
     parser.add_argument("--checkpoint-every", type=int, default=2500)
     parser.add_argument("--eval-every", type=int, default=100)
+    parser.add_argument("--early-stop", type=float, default=0.05,
+                        help="Stop run when loss drops below this (default: 0.05). "
+                             "Set to 0 to disable.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -91,7 +94,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device} ({torch.cuda.get_device_name(0) if device.type == 'cuda' else 'cpu'})")
+    early = args.early_stop if args.early_stop > 0 else None
     print(f"Runs: {len(configs)}, steps/run: {args.max_steps}, eval every: {args.eval_every}")
+    print(f"Early stop: {'loss < ' + str(early) if early else 'disabled'}")
     print(f"torch.compile: {'yes' if hasattr(torch, 'compile') else 'no'}")
     print()
 
@@ -110,10 +115,12 @@ def main():
 
         t0 = time.time()
         try:
-            trainer = Trainer(config, device=device, quiet=True)
+            trainer = Trainer(config, device=device, quiet=True, early_stop_loss=early)
             final = trainer.train()
             elapsed = time.time() - t0
-            print(f"loss={final['train_loss']:.4f}  gap={final['z_shuffle_gap']:.4f}  {elapsed:.0f}s")
+            stopped = final["step"] if "step" in final else args.max_steps
+            print(f"loss={final['train_loss']:.4f}  gap={final['z_shuffle_gap']:.4f}  "
+                  f"step={stopped}  {elapsed:.0f}s")
             completed += 1
         except Exception as e:
             elapsed = time.time() - t0
