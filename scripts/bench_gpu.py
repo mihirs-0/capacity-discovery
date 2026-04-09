@@ -11,7 +11,7 @@ if not torch.cuda.is_available():
     sys.exit(1)
 
 print("Device:", torch.cuda.get_device_name(0))
-print("VRAM:", round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1), "GB")
+print("VRAM:", round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1), "GB")
 
 model = Transformer(4, 4, 128, 512).cuda()
 x = torch.randint(0, 40, (128, 16)).cuda()
