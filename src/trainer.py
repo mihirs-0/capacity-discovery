@@ -58,8 +58,11 @@ class Trainer:
             print(f"Model parameters: {param_count:,}")
 
         # Compile model for faster training (fuses small CUDA kernels)
+        # Disable CUDA graphs to prevent output buffer overwrites between runs
         if self.device.type == "cuda" and hasattr(torch, "compile"):
             torch.set_float32_matmul_precision("high")
+            import torch._inductor.config
+            torch._inductor.config.triton.cudagraphs = False
             self.model = torch.compile(self.model)
 
         # Build optimizer
