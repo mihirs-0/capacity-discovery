@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
-"""Parallel experiment launcher optimized for single-GPU (H100) deployment.
+"""Parallel experiment launcher for single-GPU deployment.
 
 Runs multiple independent training experiments concurrently using a process pool.
 Each worker gets its own model/optimizer/dataset and shares the GPU via CUDA's
 built-in kernel scheduling.
 
 Memory budget per worker on GPU:
-  - Model params:     ~3.2 MB  (803K × 4 bytes)
+  - Model params:     ~3.2 MB  (803K x 4 bytes)
   - Adam state (m,v): ~6.4 MB
   - Gradients:        ~3.2 MB
   - Activations:      ~2 MB per batch
   - Total:            ~15 MB per worker
+  - CUDA context:     ~500 MB per process (spawned)
 
-  With 80 GB VRAM and ~800 MB CUDA context per process:
-  - 8 workers: ~7 GB  (safe, CPU-matched)
-  - 20 workers: ~17 GB (aggressive, GPU has headroom)
+  RTX 5090 (32 GB VRAM, 32 vCPU, 30 GB disk):
+    24 workers: ~12.4 GB VRAM, checkpoints ~3.4 GB disk
+
+  H100 SXM (80 GB VRAM, 8 vCPU):
+    8 workers: ~4.1 GB VRAM
 
 Usage:
-  # All phases, 8 workers (default for 8-vCPU machine)
-  python scripts/run_parallel.py --phase all --workers 8
+  # RTX 5090: all phases, 24 workers
+  python scripts/run_parallel.py --phase all --workers 24
 
-  # Phase 1 only, max parallelism
-  python scripts/run_parallel.py --phase 1 --workers 20
+  # Quick smoke test
+  python scripts/run_parallel.py --phase 1 --workers 4 --max-steps 2000
 
-  # Quick test: 2000 steps, 2 workers
-  python scripts/run_parallel.py --phase 1 --workers 2 --max-steps 2000
+  # Dry run to preview
+  python scripts/run_parallel.py --phase all --dry-run
 """
 
 import argparse
@@ -45,7 +48,8 @@ sys.path.insert(0, PROJECT_ROOT)
 # ---------------------------------------------------------------------------
 
 def _make_config_dict(K, n_b, data_seed, model_seed, experiment_name,
-                      max_steps=50_000, results_root=None):
+                      max_steps=50_000, checkpoint_every=2500,
+                      eval_every=100, results_root=None):
     """Build a config dict that ExperimentConfig.from_dict can consume."""
     d = {
         "task": {
@@ -78,8 +82,8 @@ def _make_config_dict(K, n_b, data_seed, model_seed, experiment_name,
             "model_seed": model_seed,
         },
         "eval": {
-            "eval_every": 100,
-            "checkpoint_every": 200,
+            "eval_every": eval_every,
+            "checkpoint_every": checkpoint_every,
             "z_shuffle_batch_size": 1024,
             "group_eval_n_groups": 200,
             "hessian_enabled": False,
@@ -92,8 +96,9 @@ def _make_config_dict(K, n_b, data_seed, model_seed, experiment_name,
     return d
 
 
-def generate_phase1_configs(max_steps=50_000, results_root=None):
-    """Phase 1: D-sweep. K=20, 7 D values × 5 seeds = 35 runs."""
+def generate_phase1_configs(max_steps=50_000, checkpoint_every=2500,
+                            eval_every=100, results_root=None):
+    """Phase 1: D-sweep. K=20, 7 D values x 5 seeds = 35 runs."""
     K = 20
     D_values = [1000, 3000, 5000, 10000, 20000, 50000, 100000]
     seeds = [0, 1, 2, 3, 4]
@@ -104,13 +109,15 @@ def generate_phase1_configs(max_steps=50_000, results_root=None):
             configs.append(_make_config_dict(
                 K=K, n_b=n_b, data_seed=D, model_seed=seed,
                 experiment_name="phase1_d_sweep",
-                max_steps=max_steps, results_root=results_root,
+                max_steps=max_steps, checkpoint_every=checkpoint_every,
+                eval_every=eval_every, results_root=results_root,
             ))
     return configs
 
 
-def generate_phase1_5_configs(max_steps=50_000, results_root=None):
-    """Phase 1.5: K-sweep at fixed D=10000. 3 K values × 5 seeds = 15 runs."""
+def generate_phase1_5_configs(max_steps=50_000, checkpoint_every=2500,
+                              eval_every=100, results_root=None):
+    """Phase 1.5: K-sweep at fixed D=10000. 3 K values x 5 seeds = 15 runs."""
     D = 10000
     K_values = [5, 10, 20]
     seeds = [0, 1, 2, 3, 4]
@@ -121,7 +128,8 @@ def generate_phase1_5_configs(max_steps=50_000, results_root=None):
             configs.append(_make_config_dict(
                 K=K, n_b=n_b, data_seed=10000, model_seed=seed,
                 experiment_name="phase1_5_k_sweep",
-                max_steps=max_steps, results_root=results_root,
+                max_steps=max_steps, checkpoint_every=checkpoint_every,
+                eval_every=eval_every, results_root=results_root,
             ))
     return configs
 
@@ -195,12 +203,22 @@ def main():
         help="Which experimental phase(s) to run (default: all).",
     )
     parser.add_argument(
-        "--workers", type=int, default=8,
-        help="Number of parallel worker processes (default: 8, match vCPU count).",
+        "--workers", type=int, default=24,
+        help="Number of parallel worker processes (default: 24).",
     )
     parser.add_argument(
         "--max-steps", type=int, default=50_000,
         help="Training steps per run (default: 50000).",
+    )
+    parser.add_argument(
+        "--checkpoint-every", type=int, default=2500,
+        help="Save model checkpoint every N steps (default: 2500). "
+             "200 = full fidelity but ~40 GB disk for 50 runs. "
+             "2500 = ~3.4 GB disk, 21 checkpoints per run.",
+    )
+    parser.add_argument(
+        "--eval-every", type=int, default=100,
+        help="Run diagnostics every N steps (default: 100).",
     )
     parser.add_argument(
         "--results-root", type=str, default=None,
@@ -213,16 +231,31 @@ def main():
     args = parser.parse_args()
 
     # Collect configs
+    sweep_kwargs = dict(
+        max_steps=args.max_steps,
+        checkpoint_every=args.checkpoint_every,
+        eval_every=args.eval_every,
+        results_root=args.results_root,
+    )
     configs = []
     if args.phase in ("1", "all"):
-        configs.extend(generate_phase1_configs(args.max_steps, args.results_root))
+        configs.extend(generate_phase1_configs(**sweep_kwargs))
     if args.phase in ("1.5", "all"):
-        configs.extend(generate_phase1_5_configs(args.max_steps, args.results_root))
+        configs.extend(generate_phase1_5_configs(**sweep_kwargs))
+
+    # Disk budget estimate
+    n_ckpts = args.max_steps // args.checkpoint_every + 1
+    ckpt_bytes = 803584 * 4  # params * float32
+    disk_gb = len(configs) * n_ckpts * ckpt_bytes / 1e9
+    metrics_mb = len(configs) * (args.max_steps // args.eval_every + 1) * 500 / 1e6
 
     print(f"Experiment plan: {len(configs)} runs, {args.workers} workers, "
           f"{args.max_steps} steps/run")
     print(f"  Phase 1:   {sum(1 for c in configs if c['experiment_name'] == 'phase1_d_sweep')} runs")
     print(f"  Phase 1.5: {sum(1 for c in configs if c['experiment_name'] == 'phase1_5_k_sweep')} runs")
+    print(f"  Checkpoints: every {args.checkpoint_every} steps "
+          f"({n_ckpts}/run, ~{disk_gb:.1f} GB disk)")
+    print(f"  Metrics: every {args.eval_every} steps (~{metrics_mb:.0f} MB disk)")
 
     if args.dry_run:
         for i, c in enumerate(configs):

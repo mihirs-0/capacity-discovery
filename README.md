@@ -2,52 +2,61 @@
 
 Experimental codebase studying how neural networks discover informative input features as a function of task load (D/params).
 
-## Quick start
+## Quick start (GPU container)
 
 ```bash
+git clone https://github.com/mihirs-0/capacity-discovery.git
+cd capacity-discovery
 pip install -r requirements.txt
-python -m pytest tests/ -v          # verify everything works
+python -m pytest tests/ -v
 ```
 
-## Running experiments
+## Running the full experiment
 
-**Single run** (local dev / debugging):
+**RTX 5090 (32 GB VRAM, 32 vCPU, 30 GB disk):**
 ```bash
-python scripts/run_single.py --K 20 --n_b 500 --max_steps 2000
-```
+# All 50 runs (Phase 1 + 1.5), 24 parallel workers
+python scripts/run_parallel.py --phase all --workers 24
 
-**Full sweep on GPU** (H100 optimized, parallel):
-```bash
-# All 50 runs (Phase 1 + 1.5), 8 workers, 50K steps each
-python scripts/run_parallel.py --phase all --workers 8
-
-# Phase 1 only, aggressive parallelism
-python scripts/run_parallel.py --phase 1 --workers 20
-
-# Dry run to see what would launch
+# Dry run to preview what will launch
 python scripts/run_parallel.py --phase all --dry-run
 ```
 
-**Analysis and plots**:
+**Smaller GPU / tighter disk:**
+```bash
+# Fewer workers, sparser checkpoints
+python scripts/run_parallel.py --phase all --workers 8 --checkpoint-every 5000
+```
+
+**Analysis and plots** (after runs complete):
 ```bash
 python scripts/analyze.py results/phase1_d_sweep --K 20
 python scripts/plot_d_sweep.py results/phase1_d_sweep
 ```
 
-## Architecture
-
-- `src/tokenizer.py` — Fixed 40-token character-level tokenizer
-- `src/task.py` — Surjective map dataset generator with constraint verification
-- `src/model.py` — Decoder-only Transformer from scratch (803K params default)
-- `src/trainer.py` — Training loop with eval hooks and checkpointing
-- `src/diagnostics.py` — D1-D6 measurements (loss, z-shuffle gap, group accuracy, stable ranks)
-- `src/hessian.py` — Hessian eigenvalue computation via power iteration
-
 ## Parallelization strategy
 
-Each training run uses ~15 MB GPU memory (tiny model). On an H100 (80 GB VRAM, 8 vCPU):
-- 8 concurrent workers = ~7 GB GPU usage
-- 50 runs / 8 workers = ~7 rounds
-- Total wall time: ~35 min at 50K steps/run (vs ~11 hours sequential)
+Each training run uses ~15 MB GPU memory (803K param model). On RTX 5090:
 
-Workers are spawned via `torch.multiprocessing` with the `spawn` context to avoid CUDA fork issues. Each worker has its own model, optimizer, and dataset. The GPU handles concurrent kernels from multiple workers via its built-in scheduler.
+| Resource | Budget | Usage (24 workers) |
+|----------|--------|--------------------|
+| VRAM | 32 GB | ~12.4 GB (500 MB CUDA ctx + 15 MB model per worker) |
+| vCPU | 32 | 24 workers + OS headroom |
+| Disk | 30 GB | ~3.4 GB checkpoints + ~12 MB metrics |
+| RAM | 141 GB | ~2 GB (datasets + tensors) |
+
+Workers are spawned via `torch.multiprocessing` (spawn context). Each has its own model, optimizer, and dataset. CUDA schedules concurrent kernels automatically.
+
+**Expected wall time:** 50 runs / 24 workers = 3 rounds. ~10-15 min total on RTX 5090.
+
+## Architecture
+
+- `src/tokenizer.py` -- Fixed 40-token character-level tokenizer
+- `src/task.py` -- Surjective map dataset generator with constraint verification
+- `src/model.py` -- Decoder-only Transformer from scratch (803K params default)
+- `src/trainer.py` -- Training loop with eval hooks and checkpointing
+- `src/diagnostics.py` -- D1-D6 measurements (loss, z-shuffle gap, group accuracy, stable ranks)
+- `src/hessian.py` -- Hessian eigenvalue computation via power iteration
+- `scripts/run_parallel.py` -- Parallel launcher (main entry point for GPU runs)
+- `scripts/analyze.py` -- Compute tau, summary statistics
+- `scripts/plot_d_sweep.py` -- Phase 1 plots (loss curves, tau vs D, etc.)
