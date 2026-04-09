@@ -59,7 +59,8 @@ class Trainer:
 
         # Compile model for faster training (fuses small CUDA kernels)
         if self.device.type == "cuda" and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+            torch.set_float32_matmul_precision("high")
+            self.model = torch.compile(self.model)
 
         # Build optimizer
         self.optimizer = torch.optim.AdamW(
