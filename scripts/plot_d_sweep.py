@@ -4,6 +4,7 @@ import argparse
 import math
 import os
 import sys
+from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,30 +14,52 @@ from scripts.analyze import find_runs, compute_tau
 
 
 def plot_loss_curves(runs_by_D: dict, K: int, output_dir: str):
-    """Loss vs step for all D values, 5 seeds each."""
+    """Loss vs step for all D values. Handles early-stopped runs by
+    extending the last loss to max step (model would stay there)."""
     fig, ax = plt.subplots(figsize=(12, 7))
     colors = plt.cm.viridis(np.linspace(0, 1, len(runs_by_D)))
+
+    # Find max step across all runs (for extension)
+    max_step = max(m["step"] for runs in runs_by_D.values()
+                   for r in runs for m in r["metrics"])
 
     for (D, runs), color in zip(sorted(runs_by_D.items()), colors):
         for r in runs:
             steps = [m["step"] for m in r["metrics"]]
             losses = [m["train_loss"] for m in r["metrics"]]
+            # Plot raw curve (solid)
             ax.plot(steps, losses, color=color, alpha=0.3, linewidth=0.8)
-        # Mean
-        all_steps = sorted(set(s for r in runs for m in r["metrics"] for s in [m["step"]]))
-        step_to_losses = {}
+            # Extend with dotted line if early stopped
+            if steps[-1] < max_step:
+                ax.plot([steps[-1], max_step], [losses[-1], losses[-1]],
+                        color=color, alpha=0.2, linewidth=0.6, linestyle=":")
+
+        # Mean curve: at each step, extend early-stopped runs at their final loss
+        all_step_losses = defaultdict(list)
+        all_steps = sorted(set(m["step"] for r in runs for m in r["metrics"]))
         for r in runs:
-            for m in r["metrics"]:
-                step_to_losses.setdefault(m["step"], []).append(m["train_loss"])
-        mean_steps = sorted(step_to_losses.keys())
-        mean_losses = [np.mean(step_to_losses[s]) for s in mean_steps]
-        ax.plot(mean_steps, mean_losses, color=color, linewidth=2, label=f"D={D}")
+            run_steps = [m["step"] for m in r["metrics"]]
+            run_losses = [m["train_loss"] for m in r["metrics"]]
+            final_loss = run_losses[-1]
+            final_step = run_steps[-1]
+            step_idx = 0
+            for s in all_steps:
+                if s <= final_step:
+                    while step_idx < len(run_steps) - 1 and run_steps[step_idx + 1] <= s:
+                        step_idx += 1
+                    all_step_losses[s].append(run_losses[step_idx])
+                else:
+                    all_step_losses[s].append(final_loss)
+        mean_steps = sorted(all_step_losses.keys())
+        mean_losses = [np.mean(all_step_losses[s]) for s in mean_steps]
+        ax.plot(mean_steps, mean_losses, color=color, linewidth=2.5, label=f"D={D}")
 
     ax.axhline(math.log(K), color="red", linestyle="--", alpha=0.7,
                label=f"log({K}) = {math.log(K):.2f}")
     ax.set_xlabel("Step")
     ax.set_ylabel("Training Loss (nats)")
-    ax.set_title("Training Loss vs Step (D-sweep)")
+    ax.set_title("Training Loss vs Step (D-sweep)\n"
+                 "Solid: actual data. Dotted: extension (early-stopped runs).")
     ax.legend(fontsize=8)
     ax.set_ylim(bottom=-0.1)
     fig.tight_layout()

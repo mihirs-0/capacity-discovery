@@ -58,6 +58,8 @@ def phase1_configs(max_steps, checkpoint_every, eval_every):
 
 
 def phase1_5_configs(max_steps, checkpoint_every, eval_every):
+    """Phase 1.5: K-sweep at D=10000. Distinct experiment_name per K
+    to avoid run_dir collision (all share D=10000)."""
     D = 10000
     K_values = [5, 10, 20]
     seeds = [0, 1, 2, 3, 4]
@@ -67,7 +69,7 @@ def phase1_5_configs(max_steps, checkpoint_every, eval_every):
         for seed in seeds:
             configs.append(make_config(
                 K=K, n_b=n_b, data_seed=10000, model_seed=seed,
-                experiment_name="phase1_5_k_sweep",
+                experiment_name=f"phase1_5_k_sweep/K{K}",
                 max_steps=max_steps, checkpoint_every=checkpoint_every,
                 eval_every=eval_every,
             ))
